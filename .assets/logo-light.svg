@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="160" viewBox="0 0 660 160" role="img" aria-label="LightMark">
+  <defs>
+    <linearGradient id="towerG" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#62A9E8"/>
+      <stop offset="1" stop-color="#2E6FB0"/>
+    </linearGradient>
+    <linearGradient id="beamL" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFC24D" stop-opacity="0"/>
+      <stop offset="1" stop-color="#FFC24D" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="beamR" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFC24D" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFC24D" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lightG" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFC24D"/>
+      <stop offset="1" stop-color="#FF9A3D"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 灯塔扫射光束 -->
+  <polygon points="67,52 16,32 16,86 67,66" fill="url(#beamL)"/>
+  <polygon points="98,52 149,32 149,86 98,66" fill="url(#beamR)"/>
+
+  <!-- 灯室与塔顶 -->
+  <circle cx="82.5" cy="18" r="3.5" fill="#FFC24D"/>
+  <polygon points="82.5,20 64,48 101,48" fill="#35618F"/>
+  <rect x="67" y="48" width="31" height="20" rx="3" fill="#FFC24D" stroke="#35618F" stroke-width="2.5"/>
+
+  <!-- 灯台 -->
+  <rect x="62" y="68" width="41" height="6" rx="2" fill="#35618F"/>
+
+  <!-- 塔身与条纹 -->
+  <polygon points="68,74 97,74 105,132 60,132" fill="url(#towerG)"/>
+  <polygon points="66.2,87 98.8,87 100.6,100 64.4,100" fill="#EAF3FC" opacity="0.95"/>
+  <polygon points="63.2,109 101.8,109 103.6,122 61.4,122" fill="#EAF3FC" opacity="0.95"/>
+
+  <!-- 基座 -->
+  <rect x="54" y="132" width="57" height="9" rx="3" fill="#35618F"/>
+  <rect x="47" y="141" width="71" height="7" rx="3" fill="#2A4E78"/>
+
+  <!-- 字标 -->
+  <text x="180" y="102" font-family="'Segoe UI','Helvetica Neue',Arial,'PingFang SC','Microsoft YaHei',sans-serif" font-size="68" font-weight="800" letter-spacing="0.5">
+    <tspan fill="url(#lightG)">Light</tspan><tspan fill="#1F2430">Mark</tspan>
+  </text>
+  <text x="183" y="130" font-family="'Segoe UI','Helvetica Neue',Arial,'PingFang SC','Microsoft YaHei',sans-serif" font-size="14.5" font-weight="600" letter-spacing="4.2" fill="#5B6572">LOCAL BOOKMARK LIGHTHOUSE</text>
+</svg>
