@@ -18,3 +18,9 @@ frontend/node_modules/
 # 临时文件
 *.tmp
 *.log
+
+# 工作区数据（agent 记忆、会话上下文等）
+.workbuddy/
+
+# 其他 agent 的开发上下文导出
+lightmark-main.json
