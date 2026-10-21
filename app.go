@@ -315,10 +315,14 @@ func (a *App) UndoLastAction() (string, error) {
 
 // dupTypeWord 重复提示中的类型用词。
 func dupTypeWord(t model.RecordType) string {
-	if t == model.TypeURL {
+	switch t {
+	case model.TypeURL:
 		return "网址"
+	case model.TypeFolder:
+		return "文件夹路径"
+	default:
+		return "文件路径"
 	}
-	return "文件路径"
 }
 
 // ListRecords 按条件查询记录列表。
@@ -385,6 +389,7 @@ func (a *App) StarRecord(id string, star bool) error {
 // ValidateAllRecords 并发校验所有未删除记录的有效性，返回失效数量。
 // 最多 8 个 worker 并行（URL 校验含网络超时，串行在万条级下不可接受）；
 // 通过 validateMu 互斥，防止与启动自动校验并发重复执行。
+// 用户手动标注过（invalid_mode != 0）的记录不参与自动校验，避免覆盖人工判断。
 func (a *App) ValidateAllRecords() (int, error) {
 	if !a.validateMu.TryLock() {
 		return 0, errors.New("校验正在进行中，请稍候")
@@ -394,6 +399,14 @@ func (a *App) ValidateAllRecords() (int, error) {
 	recs, err := a.store.ListRecords(model.ListFilter{})
 	if err != nil {
 		return 0, err
+	}
+	// 手动标注记录直接跳过（不进入 job 队列）
+	pending := make([]model.Record, 0, len(recs))
+	for _, r := range recs {
+		if r.InvalidMode != model.InvalidModeAuto {
+			continue
+		}
+		pending = append(pending, r)
 	}
 
 	type checkResult struct {
@@ -417,18 +430,19 @@ func (a *App) ValidateAllRecords() (int, error) {
 					return
 				default:
 				}
-				r := recs[i]
+				r := pending[i]
 				var invalid bool
-				if r.Type == model.TypeFile {
-					invalid = !fileops.PathExists(r.PathOrURL)
-				} else {
+				// 网页走 HTTP 校验，文件/文件夹走本地存在性检查
+				if r.Type == model.TypeURL {
 					invalid = !fileops.URLReachable(r.PathOrURL)
+				} else {
+					invalid = !fileops.PathExists(r.PathOrURL)
 				}
 				results <- checkResult{id: r.ID, invalid: invalid, was: r.Invalid}
 			}
 		}()
 	}
-	out := make([]checkResult, 0, len(recs))
+	out := make([]checkResult, 0, len(pending))
 	collectDone := make(chan struct{})
 	go func() {
 		for r := range results {
@@ -438,7 +452,7 @@ func (a *App) ValidateAllRecords() (int, error) {
 	}()
 	go func() {
 		defer close(jobs)
-		for i := range recs {
+		for i := range pending {
 			select {
 			case jobs <- i:
 			case <-a.appCtx.Done():
@@ -559,6 +573,47 @@ func (a *App) ChooseFilePath() (string, error) {
 		Title:   "选择文件",
 		Filters: []runtime.FileFilter{{DisplayName: "所有文件 (*.*)", Pattern: "*.*"}},
 	})
+}
+
+// ChooseFolderPath 弹出文件夹选择对话框，返回选中的文件夹路径（取消时返回空串）。
+func (a *App) ChooseFolderPath() (string, error) {
+	return runtime.OpenDirectoryDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择文件夹",
+	})
+}
+
+// PathKind 判断本地路径类型："folder"（真实存在的目录）或 "file"。
+// 供拖拽录入时区分文件夹与文件。
+func (a *App) PathKind(path string) string {
+	return fileops.PathKind(path)
+}
+
+// SetInvalidMode 设置手动失效标注：0 自动 / 1 强制有效 / 2 强制失效。
+// 恢复自动（0）时立即重新校验并原子清空标注，界面无需等待全量校验。
+func (a *App) SetInvalidMode(id string, mode int) error {
+	if mode != model.InvalidModeAuto {
+		return a.store.SetRecordInvalidMode(id, mode)
+	}
+	rec, err := a.store.GetRecord(id)
+	if err != nil {
+		return err
+	}
+	valid := fileops.PathExists(rec.PathOrURL)
+	if rec.Type == model.TypeURL {
+		valid = fileops.URLReachable(rec.PathOrURL)
+	}
+	return a.store.ResetInvalidAuto(id, !valid)
+}
+
+// GetPreference 读取界面偏好设置（如排序方式），键不存在时返回空串。
+// 偏好保存在 SQLite 中而非 WebView localStorage，保证重启后可靠恢复。
+func (a *App) GetPreference(key string) (string, error) {
+	return a.store.GetSetting(key)
+}
+
+// SetPreference 保存界面偏好设置。
+func (a *App) SetPreference(key, value string) error {
+	return a.store.SetSetting(key, value)
 }
 
 // FetchFaviconData 下载网页 favicon 并转为 data URL（限制 64KB），便于前端直接展示。

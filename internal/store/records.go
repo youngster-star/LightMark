@@ -24,7 +24,7 @@ var validSortColumns = map[string]string{
 
 // validateRecordInput 校验记录入参，返回规范化后的类型与路径/网址。
 // 规范化规则：
-//   - file：filepath.Clean 折叠冗余分隔符；Windows 路径大小写不敏感，比较环节另行折叠
+//   - file / folder：filepath.Clean 折叠冗余分隔符；Windows 路径大小写不敏感，比较环节另行折叠
 //   - url：去除协议后尾部多余的 "/"（根路径除外），便于重复检测与展示一致性
 func validateRecordInput(in model.RecordInput) (model.RecordType, string, error) {
 	if in.Title == "" {
@@ -34,6 +34,8 @@ func validateRecordInput(in model.RecordInput) (model.RecordType, string, error)
 	switch in.Type {
 	case string(model.TypeFile), "":
 		rt = model.TypeFile
+	case string(model.TypeFolder):
+		rt = model.TypeFolder
 	case string(model.TypeURL):
 		rt = model.TypeURL
 	default:
@@ -43,7 +45,7 @@ func validateRecordInput(in model.RecordInput) (model.RecordType, string, error)
 	if in.PathOrURL == "" {
 		return "", "", errors.New("路径或网址不能为空")
 	}
-	if rt == model.TypeFile {
+	if rt == model.TypeFile || rt == model.TypeFolder {
 		in.PathOrURL = filepath.Clean(in.PathOrURL)
 	} else {
 		// 仅裁剪末尾斜杠，保留查询串与路径结构
@@ -192,6 +194,9 @@ func (s *Store) UpdateRecord(in model.RecordInput) (*model.Record, error) {
 	if in.ID == "" {
 		return nil, errors.New("记录 ID 不能为空")
 	}
+	if in.InvalidMode < model.InvalidModeAuto || in.InvalidMode > model.InvalidModeInvalid {
+		return nil, fmt.Errorf("无效的失效标注模式: %d", in.InvalidMode)
+	}
 	rt, pathOrURL, err := validateRecordInput(in)
 	if err != nil {
 		return nil, err
@@ -209,12 +214,16 @@ func (s *Store) UpdateRecord(in model.RecordInput) (*model.Record, error) {
 		return nil, err
 	}
 	now := time.Now().UnixMilli()
-	// favicon 为空时保持原值，非空时覆盖（支持重新抓取图标）
+	// favicon 为空时保持原值，非空时覆盖（支持重新抓取图标）；
+	// 失效标注模式：1 强制有效（invalid=0）、2 强制失效（invalid=1）、0 恢复自动（保持现值待下次校验）
 	res, err := tx.Exec(
 		`UPDATE records SET type=?, path_or_url=?, title=?, note=?, category_id=?, star=?,
-		     favicon=CASE WHEN ?<>'' THEN ? ELSE favicon END, updated_at=? WHERE id=?`,
+		     favicon=CASE WHEN ?<>'' THEN ? ELSE favicon END,
+		     invalid_mode=?,
+		     invalid=CASE ? WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE invalid END,
+		     updated_at=? WHERE id=?`,
 		rt, in.PathOrURL, in.Title, in.Note, in.CategoryID, boolToInt(in.Star),
-		in.Favicon, in.Favicon, now, in.ID,
+		in.Favicon, in.Favicon, in.InvalidMode, in.InvalidMode, now, in.ID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("更新记录失败: %w", err)
@@ -372,10 +381,10 @@ func (s *Store) RestoreRecordSnapshot(rec *model.Record) error {
 
 	res, err := tx.Exec(
 		`UPDATE records SET type=?, path_or_url=?, title=?, note=?, category_id=?, star=?,
-		     invalid=?, deleted=?, favicon=?, opened_at=?, open_count=?, created_at=?, updated_at=?
+		     invalid=?, invalid_mode=?, deleted=?, favicon=?, opened_at=?, open_count=?, created_at=?, updated_at=?
 		 WHERE id=?`,
 		string(rec.Type), rec.PathOrURL, rec.Title, rec.Note, rec.CategoryID, boolToInt(rec.Star),
-		boolToInt(rec.Invalid), boolToInt(rec.Deleted), rec.Favicon, rec.OpenedAt, rec.OpenCount,
+		boolToInt(rec.Invalid), rec.InvalidMode, boolToInt(rec.Deleted), rec.Favicon, rec.OpenedAt, rec.OpenCount,
 		rec.CreatedAt, rec.UpdatedAt, rec.ID,
 	)
 	if err != nil {
@@ -384,10 +393,11 @@ func (s *Store) RestoreRecordSnapshot(rec *model.Record) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		// 行已不存在（被彻底删除）：按快照重建整行
 		if _, err := tx.Exec(
-			`INSERT INTO records (id, type, path_or_url, title, note, category_id, star, invalid, deleted, favicon, opened_at, open_count, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO records (id, type, path_or_url, title, note, category_id, star, invalid, invalid_mode, deleted,
+			                      favicon, opened_at, open_count, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			rec.ID, string(rec.Type), rec.PathOrURL, rec.Title, rec.Note, rec.CategoryID,
-			boolToInt(rec.Star), boolToInt(rec.Invalid), boolToInt(rec.Deleted), rec.Favicon,
+			boolToInt(rec.Star), boolToInt(rec.Invalid), rec.InvalidMode, boolToInt(rec.Deleted), rec.Favicon,
 			rec.OpenedAt, rec.OpenCount, rec.CreatedAt, rec.UpdatedAt,
 		); err != nil {
 			return fmt.Errorf("重建记录失败: %w", err)
@@ -408,22 +418,54 @@ func (s *Store) RestoreRecordSnapshot(rec *model.Record) error {
 	return tx.Commit()
 }
 
-// SetRecordInvalid 标记记录失效状态，并同步索引。
+// SetRecordInvalid 写入自动校验得出的失效状态（仅作用于未手动标注的记录）。
 // 校验属于状态检测，不刷新 updated_at，避免打乱「按更新时间」排序。
+// 记录不存在或已被用户手动标注时静默跳过：自动校验是后台行为，
+// 不应把「手动标注优先」这种正常情况当作错误抛给界面。
 func (s *Store) SetRecordInvalid(id string, invalid bool) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer tx.Rollback()
-	res, err := tx.Exec(`UPDATE records SET invalid=? WHERE id=?`, boolToInt(invalid), id)
+	_, err := s.db.Exec(`UPDATE records SET invalid=? WHERE id=? AND invalid_mode=0`, boolToInt(invalid), id)
 	if err != nil {
 		return fmt.Errorf("更新失效状态失败: %w", err)
+	}
+	return nil
+}
+
+// ResetInvalidAuto 恢复自动校验并原子写入本次校验结果：
+// 清空手动标注与写入状态在同一条语句内完成，避免两步之间被并发标注打断。
+func (s *Store) ResetInvalidAuto(id string, invalid bool) error {
+	res, err := s.db.Exec(
+		`UPDATE records SET invalid=?, invalid_mode=0 WHERE id=?`,
+		boolToInt(invalid), id,
+	)
+	if err != nil {
+		return fmt.Errorf("恢复自动校验失败: %w", err)
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("记录不存在: %s", id)
 	}
-	return tx.Commit()
+	return nil
+}
+
+// SetRecordInvalidMode 设置用户手动失效标注模式：
+// 0 自动（清除标注）、1 强制有效、2 强制失效。
+// 手动标注不改变 updated_at，也不重建索引（失效状态不参与 FTS）。
+func (s *Store) SetRecordInvalidMode(id string, mode int) error {
+	if mode < model.InvalidModeAuto || mode > model.InvalidModeInvalid {
+		return fmt.Errorf("无效的失效标注模式: %d", mode)
+	}
+	res, err := s.db.Exec(
+		`UPDATE records SET invalid_mode=?,
+		     invalid=CASE ? WHEN 1 THEN 0 WHEN 2 THEN 1 ELSE invalid END
+		 WHERE id=?`,
+		mode, mode, id,
+	)
+	if err != nil {
+		return fmt.Errorf("更新失效标注失败: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("记录不存在: %s", id)
+	}
+	return nil
 }
 
 // TouchRecordOpen 记录打开行为：刷新最近打开时间并累加打开次数。
@@ -499,7 +541,7 @@ func (s *Store) ListRecords(f model.ListFilter) ([]model.Record, error) {
 
 // scanRecords 从结果集扫描基础字段。
 // 调用方 SELECT 列顺序必须与 Scan 一致：
-// id, type, path_or_url, title, note, category_id, star, invalid, deleted, favicon, opened_at, open_count, created_at, updated_at
+// id, type, path_or_url, title, note, category_id, star, invalid, deleted, favicon, opened_at, open_count, invalid_mode, created_at, updated_at
 func scanRecords(rows *sql.Rows) ([]model.Record, error) {
 	// 初始化为空切片而非 var 声明的 nil：空结果集序列化为 JSON null 会让前端
 	// records.length 抛 TypeError，导致整个界面渲染中断白屏
@@ -508,7 +550,8 @@ func scanRecords(rows *sql.Rows) ([]model.Record, error) {
 		var r model.Record
 		var star, invalid, deleted int
 		if err := rows.Scan(&r.ID, &r.Type, &r.PathOrURL, &r.Title, &r.Note, &r.CategoryID,
-			&star, &invalid, &deleted, &r.Favicon, &r.OpenedAt, &r.OpenCount, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			&star, &invalid, &deleted, &r.Favicon, &r.OpenedAt, &r.OpenCount, &r.InvalidMode,
+			&r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("扫描记录失败: %w", err)
 		}
 		r.Star = star != 0
@@ -574,10 +617,10 @@ func getRecordTx(tx *sql.Tx, id string) (*model.Record, error) {
 	var star, invalid, deleted int
 	err := tx.QueryRow(
 		`SELECT id, type, path_or_url, title, note, category_id, star, invalid, deleted,
-		       favicon, opened_at, open_count, created_at, updated_at
+		       favicon, opened_at, open_count, invalid_mode, created_at, updated_at
 		 FROM records WHERE id = ?`, id,
 	).Scan(&r.ID, &r.Type, &r.PathOrURL, &r.Title, &r.Note, &r.CategoryID, &star, &invalid, &deleted,
-		&r.Favicon, &r.OpenedAt, &r.OpenCount, &r.CreatedAt, &r.UpdatedAt)
+		&r.Favicon, &r.OpenedAt, &r.OpenCount, &r.InvalidMode, &r.CreatedAt, &r.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("记录不存在: %s", id)
 	}

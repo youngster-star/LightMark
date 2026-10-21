@@ -56,7 +56,7 @@ func (s *Store) queryRecords(where []string, args []any, f model.ListFilter) (*s
 		order = "DESC"
 	}
 	q := `SELECT id, type, path_or_url, title, note, category_id, star, invalid, deleted,
-		     favicon, opened_at, open_count, created_at, updated_at
+		     favicon, opened_at, open_count, invalid_mode, created_at, updated_at
 		FROM records WHERE ` + strings.Join(where, " AND ") + ` ORDER BY ` + sortCol + ` ` + order
 	rows, err := s.db.Query(q, args...)
 	if err != nil {

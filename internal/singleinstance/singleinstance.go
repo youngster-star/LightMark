@@ -25,7 +25,7 @@ const (
 	windowName   = "LightMark_SingleInstance_Window"
 	windowClass  = "LightMark_SingleInstance_Class"
 	activateMsg  = 0x8000 + 1 // WM_APP+1，自定义激活消息
-	errorAlready = 183         // ERROR_ALREADY_EXISTS
+	errorAlready = 183        // ERROR_ALREADY_EXISTS
 )
 
 var (
@@ -129,13 +129,13 @@ func (s *Single) Wait(onActivate func()) error {
 		classNamePtr, _ := syscall.UTF16PtrFromString(windowClass)
 		var wndProc uintptr = syscall.NewCallback(windowProc)
 		wc := &wndClassW{
-			style:    0,
-			lpfnWndProc: wndProc,
-			cbClsExtra: 0,
-			cbWndExtra: 0,
-			hInstance: 0,
-			hIcon:     0,
-			hCursor:   0,
+			style:         0,
+			lpfnWndProc:   wndProc,
+			cbClsExtra:    0,
+			cbWndExtra:    0,
+			hInstance:     0,
+			hIcon:         0,
+			hCursor:       0,
 			hbrBackground: 0,
 			lpszMenuName:  0,
 			lpszClassName: uintptr(unsafe.Pointer(classNamePtr)),

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -67,10 +68,17 @@ func FetchFaviconData(rawURL string) (string, error) {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
 }
 
-// Open 用本机默认关联应用打开本地文件或网址。
+// Open 用本机默认关联应用打开本地文件、文件夹或网址。
 func Open(target string) error {
 	if target == "" {
 		return errors.New("打开目标为空")
+	}
+	// 文件夹用资源管理器打开：FileProtocolHandler 对目录的处理依赖注册表，行为不一致
+	if info, err := os.Stat(target); err == nil && info.IsDir() {
+		if err := exec.Command("explorer", target).Start(); err != nil {
+			return fmt.Errorf("打开文件夹失败: %w", err)
+		}
+		return nil
 	}
 	// FileProtocolHandler 可统一处理本地路径与 http(s) 网址
 	err := exec.Command("rundll32", "url.dll,FileProtocolHandler", target).Start()

@@ -12,6 +12,8 @@
   --hover-bg: #f0f2f5;
   --badge-file-bg: #e8f0fe;
   --badge-file-fg: #3b82f6;
+  --badge-folder-bg: #fff4e0;
+  --badge-folder-fg: #c07a12;
   --badge-url-bg: #e6f7ef;
   --badge-url-fg: #1f9d6b;
   --badge-invalid-bg: #fdeaea;
@@ -35,6 +37,8 @@ html.dark {
   --hover-bg: #2b3037;
   --badge-file-bg: #22304a;
   --badge-file-fg: #7da9f7;
+  --badge-folder-bg: #3a2f1c;
+  --badge-folder-fg: #e0a94c;
   --badge-url-bg: #1d3a2f;
   --badge-url-fg: #4ecb96;
   --badge-invalid-bg: #3a2424;
@@ -183,6 +187,11 @@ html.dark .card {
 .badge.file {
   background: var(--badge-file-bg);
   color: var(--badge-file-fg);
+}
+
+.badge.folder {
+  background: var(--badge-folder-bg);
+  color: var(--badge-folder-fg);
 }
 
 .badge.url {

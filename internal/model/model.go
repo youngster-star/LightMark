@@ -6,11 +6,23 @@ type RecordType string
 const (
 	// TypeFile 本地文件类型
 	TypeFile RecordType = "file"
+	// TypeFolder 本地文件夹类型
+	TypeFolder RecordType = "folder"
 	// TypeURL 网页类型
 	TypeURL RecordType = "url"
 )
 
-// Record 一条文件/网页标记记录
+// 失效标注模式：自动校验结果可被用户手动覆盖，避免网络抖动造成误判。
+const (
+	// InvalidModeAuto 跟随自动校验（默认）
+	InvalidModeAuto = 0
+	// InvalidModeValid 用户强制标记为有效，自动校验跳过
+	InvalidModeValid = 1
+	// InvalidModeInvalid 用户强制标记为失效，自动校验跳过
+	InvalidModeInvalid = 2
+)
+
+// Record 一条文件/文件夹/网页标记记录
 type Record struct {
 	ID         string     `json:"id"`
 	Type       RecordType `json:"type"`
@@ -26,7 +38,9 @@ type Record struct {
 	Favicon    string     `json:"favicon"`  // 网页 favicon 的 data URL（空表示未缓存）
 	OpenedAt   int64      `json:"openedAt"` // 最近打开时间戳（毫秒，0 表示未打开过）
 	OpenCount  int        `json:"openCount"`
-	Tags       []Tag      `json:"tags"`
+	// InvalidMode 失效标注模式：0 自动 / 1 强制有效 / 2 强制失效
+	InvalidMode int   `json:"invalidMode"`
+	Tags        []Tag `json:"tags"`
 }
 
 // Tag 标签
@@ -45,20 +59,22 @@ type Category struct {
 
 // RecordInput 创建/更新记录的入参
 type RecordInput struct {
-	ID         string   `json:"id"`
-	Type       string   `json:"type"`
-	PathOrURL  string   `json:"pathOrUrl"`
-	Title      string   `json:"title"`
-	Note       string   `json:"note"`
-	CategoryID string   `json:"categoryId"`
-	Star       bool     `json:"star"`
-	Favicon    string   `json:"favicon"` // favicon data URL；更新时为空表示保持不变
-	Tags       []string `json:"tags"`
+	ID         string `json:"id"`
+	Type       string `json:"type"`
+	PathOrURL  string `json:"pathOrUrl"`
+	Title      string `json:"title"`
+	Note       string `json:"note"`
+	CategoryID string `json:"categoryId"`
+	Star       bool   `json:"star"`
+	Favicon    string `json:"favicon"` // favicon data URL；更新时为空表示保持不变
+	// InvalidMode 失效标注模式（0 自动 / 1 强制有效 / 2 强制失效），仅更新时生效
+	InvalidMode int      `json:"invalidMode"`
+	Tags        []string `json:"tags"`
 }
 
 // ListFilter 列表/搜索/筛选条件
 type ListFilter struct {
-	Type       string `json:"type"`       // "" | "file" | "url"
+	Type       string `json:"type"`       // "" | "file" | "folder" | "url"
 	CategoryID string `json:"categoryId"` // 指定分类
 	Tag        string `json:"tag"`        // 指定标签名
 	StarOnly   bool   `json:"starOnly"`   // 只看星标

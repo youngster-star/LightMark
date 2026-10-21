@@ -34,7 +34,7 @@ func (s *Store) Export() (*model.Backup, error) {
 func (s *Store) listAllRecords() ([]model.Record, error) {
 	rows, err := s.db.Query(
 		`SELECT id, type, path_or_url, title, note, category_id, star, invalid, deleted,
-		       favicon, opened_at, open_count, created_at, updated_at
+		       favicon, opened_at, open_count, invalid_mode, created_at, updated_at
 		 FROM records ORDER BY updated_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("查询记录失败: %w", err)
@@ -113,15 +113,19 @@ func (s *Store) Import(b *model.Backup) (model.ImportResult, error) {
 			continue
 		}
 		rt := r.Type
-		if rt != model.TypeFile && rt != model.TypeURL {
+		if rt != model.TypeFile && rt != model.TypeFolder && rt != model.TypeURL {
 			rt = model.TypeFile
 		}
+		mode := r.InvalidMode
+		if mode < model.InvalidModeAuto || mode > model.InvalidModeInvalid {
+			mode = model.InvalidModeAuto
+		}
 		if _, err := tx.Exec(
-			`INSERT INTO records (id, type, path_or_url, title, note, category_id, star, invalid, deleted,
+			`INSERT INTO records (id, type, path_or_url, title, note, category_id, star, invalid, invalid_mode, deleted,
 			                      favicon, opened_at, open_count, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			r.ID, rt, r.PathOrURL, r.Title, r.Note, r.CategoryID,
-			boolToInt(r.Star), boolToInt(r.Invalid), boolToInt(r.Deleted),
+			boolToInt(r.Star), boolToInt(r.Invalid), mode, boolToInt(r.Deleted),
 			r.Favicon, r.OpenedAt, r.OpenCount, r.CreatedAt, r.UpdatedAt,
 		); err != nil {
 			return res, fmt.Errorf("导入记录失败: %w", err)

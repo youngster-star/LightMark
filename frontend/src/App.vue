@@ -33,6 +33,11 @@ import {
   ChooseExportPath,
   ChooseImportPath,
   ChooseFilePath,
+  ChooseFolderPath,
+  PathKind,
+  SetInvalidMode,
+  GetPreference,
+  SetPreference,
   FetchFaviconData,
 } from '../wailsjs/go/main/App'
 import { model } from '../wailsjs/go/models'
@@ -47,7 +52,14 @@ const categoryFilter = ref('')
 const tagFilter = ref('')
 const starOnly = ref(false)
 const showTrash = ref(false)
-const sortBy = ref('updated_at')
+// 排序方式持久化：localStorage 用于首屏快速恢复，后端 SQLite 负责可靠持久化
+const sortBy = ref(localStorage.getItem('lightmark-sort-by') || 'updated_at')
+watch(sortBy, (v) => {
+  localStorage.setItem('lightmark-sort-by', v)
+  SetPreference('sortBy', v).catch(() => {
+    /* 偏好落库失败不影响当前操作 */
+  })
+})
 const loading = ref(false)
 const error = ref('')
 // notice 绿色成功/信息提示（与红色 error 分离，避免成功消息误导为错误）
@@ -70,6 +82,8 @@ const form = ref({
   tags: '',
   star: false,
   favicon: '',
+  // 失效标注模式：0 自动 / 1 强制有效 / 2 强制失效（仅编辑时生效）
+  invalidMode: 0,
 })
 // lastAutoTitle 记录最近一次自动识别的标题，用于判断用户是否手动改过标题
 const lastAutoTitle = ref('')
@@ -90,9 +104,12 @@ function applyTheme() {
   document.documentElement.classList.toggle('dark', dark)
 }
 
-// 切换主题设置时持久化到 localStorage 并立即生效
+// 切换主题设置时持久化并立即生效
 watch(theme, (t) => {
   localStorage.setItem('lightmark-theme', t)
+  SetPreference('theme', t).catch(() => {
+    /* 偏好落库失败不影响主题切换 */
+  })
   applyTheme()
 })
 
@@ -149,6 +166,7 @@ function resetForm() {
     tags: '',
     star: false,
     favicon: '',
+    invalidMode: 0,
   }
   lastAutoTitle.value = ''
 }
@@ -198,7 +216,9 @@ function cancelExpand() {
 }
 
 // fileIcon 按扩展名映射文件类型图标字符
-function fileIcon(p: string): string {
+function fileIcon(r: model.Record): string {
+  if (r.type === 'folder') return '📁'
+  const p = r.pathOrUrl
   const ext = (p.split('.').pop() || '').toLowerCase()
   const map: Record<string, string> = {
     md: '📝', txt: '📄', pdf: '📕',
@@ -217,9 +237,11 @@ function fileIcon(p: string): string {
 async function addFileRecord(path: string): Promise<boolean> {
   error.value = ''
   try {
+    // 拖拽可能传入目录：由后端判断类型，文件夹以 folder 入库
+    const kind = await PathKind(path)
     await CreateRecord({
       id: '',
-      type: 'file',
+      type: kind,
       pathOrUrl: path,
       title: basename(path),
       note: '',
@@ -227,6 +249,7 @@ async function addFileRecord(path: string): Promise<boolean> {
       star: false,
       tags: [],
       favicon: '',
+      invalidMode: 0,
     })
     return true
   } catch (e) {
@@ -280,12 +303,13 @@ async function fetchTitle() {
   }
 }
 
-// pickFile 打开文件选择对话框选择本地路径：路径只能通过对话框选择/重选，不可手动编写。
-// 文件名自动识别：标题为空或仍是上次自动识别值时跟随新文件更新，用户改过则保留。
-async function pickFile() {
+// pickPath 打开选择对话框选择本地路径（文件或文件夹）：路径只能通过对话框选择/重选，不可手动编写。
+// 名称自动识别：标题为空或仍是上次自动识别值时跟随新路径更新，用户改过则保留。
+async function pickPath() {
   error.value = ''
   try {
-    const path = await ChooseFilePath()
+    const path =
+      form.value.type === 'folder' ? await ChooseFolderPath() : await ChooseFilePath()
     if (!path) return
     form.value.pathOrUrl = path
     const name = basename(path)
@@ -300,7 +324,9 @@ async function pickFile() {
 
 async function save() {
   if (!form.value.title.trim() || !form.value.pathOrUrl.trim()) {
-    error.value = form.value.type === 'file' ? '请填写标题并选择文件' : '请填写标题与网址'
+    const target =
+      form.value.type === 'url' ? '网址' : form.value.type === 'folder' ? '文件夹' : '文件'
+    error.value = `请填写标题并选择${target}`
     return
   }
   error.value = ''
@@ -316,6 +342,7 @@ async function save() {
     star: form.value.star,
     tags: tagList,
     favicon: form.value.favicon,
+    invalidMode: form.value.invalidMode,
   }
   try {
     if (form.value.id) {
@@ -339,7 +366,7 @@ async function save() {
           throw e1
         }
         const dupMsg = str.slice('DUPLICATE|'.length)
-        if (!window.confirm(dupMsgText(dupMsg)) ) {
+        if (!window.confirm(dupMsgText(dupMsg))) {
           return
         }
         await ForceCreateRecord({
@@ -357,6 +384,29 @@ async function save() {
   }
 }
 
+// toggleManualInvalid 手动覆盖失效状态：
+// 当前失效 → 强制有效（1）；当前有效 → 强制失效（2）。自动校验随即跳过该记录。
+async function toggleManualInvalid(r: model.Record) {
+  error.value = ''
+  try {
+    await SetInvalidMode(r.id, r.invalid ? 1 : 2)
+    await load()
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
+// clearInvalidMode 恢复自动校验（清除手动标注）
+async function clearInvalidMode(r: model.Record) {
+  error.value = ''
+  try {
+    await SetInvalidMode(r.id, 0)
+    await load()
+  } catch (e) {
+    error.value = String(e)
+  }
+}
+
 function openEdit(r: model.Record) {
   form.value = {
     id: r.id,
@@ -368,9 +418,10 @@ function openEdit(r: model.Record) {
     tags: (r.tags ?? []).map((t) => t.name).join(','),
     star: r.star,
     favicon: r.favicon,
+    invalidMode: r.invalidMode ?? 0,
   }
-  // 文件类型记录以原路径基名作为自动标题基线，重定位时标题可跟随
-  lastAutoTitle.value = r.type === 'file' ? basename(r.pathOrUrl) : ''
+  // 文件/文件夹类型记录以原路径基名作为自动标题基线，重定位时标题可跟随
+  lastAutoTitle.value = r.type === 'file' || r.type === 'folder' ? basename(r.pathOrUrl) : ''
   showForm.value = true
 }
 
@@ -615,6 +666,23 @@ async function toggleAutoStart() {
   }
 }
 
+// loadPreferences 从后端读取界面偏好：localStorage 丢失/不可用时仍能恢复
+async function loadPreferences() {
+  try {
+    const savedSort = await GetPreference('sortBy')
+    if (savedSort) sortBy.value = savedSort
+    // 主题仅在本地没有记录时用后端值兜底
+    if (!localStorage.getItem('lightmark-theme')) {
+      const savedTheme = await GetPreference('theme')
+      if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'system') {
+        theme.value = savedTheme
+      }
+    }
+  } catch {
+    /* 偏好读取失败时沿用默认值 */
+  }
+}
+
 onMounted(async () => {
   applyTheme()
   OnFileDrop((_x, _y, paths) => {
@@ -625,6 +693,7 @@ onMounted(async () => {
     notice.value = `启动校验发现 ${n} 条失效记录`
     load()
   })
+  await loadPreferences()
   await loadMeta()
   await load()
   await loadAutoStart()
@@ -652,6 +721,7 @@ onMounted(async () => {
       <select v-model="typeFilter" class="select" @change="load">
         <option value="">全部类型</option>
         <option value="file">文件</option>
+        <option value="folder">文件夹</option>
         <option value="url">网页</option>
       </select>
       <select v-model="categoryFilter" class="select" @change="load">
@@ -736,16 +806,17 @@ onMounted(async () => {
       <div class="form-row">
         <select v-model="form.type" class="select">
           <option value="file">文件</option>
+          <option value="folder">文件夹</option>
           <option value="url">网页</option>
         </select>
-        <input v-model="form.title" class="input" placeholder="标题 / 文件名（自动识别，可修改）" />
-        <!-- 文件路径只读展示：只能通过「选择文件」对话框选择/重选 -->
+        <input v-model="form.title" class="input" placeholder="标题 / 名称（自动识别，可修改）" />
+        <!-- 本地路径只读展示：只能通过「选择文件/文件夹」对话框选择/重选 -->
         <input
-          v-if="form.type === 'file'"
+          v-if="form.type !== 'url'"
           :value="form.pathOrUrl"
           class="input grow"
           readonly
-          placeholder="尚未选择文件，点击右侧「选择文件」"
+          :placeholder="form.type === 'folder' ? '尚未选择文件夹，点击右侧「选择文件夹」' : '尚未选择文件，点击右侧「选择文件」'"
         />
         <input
           v-else
@@ -754,8 +825,8 @@ onMounted(async () => {
           placeholder="网址 https://…"
           @blur="fetchTitle"
         />
-        <button v-if="form.type === 'file'" type="button" class="btn" @click="pickFile">
-          选择文件…
+        <button v-if="form.type !== 'url'" type="button" class="btn" @click="pickPath">
+          {{ form.type === 'folder' ? '选择文件夹…' : '选择文件…' }}
         </button>
         <button v-if="form.type === 'url'" type="button" class="btn" @click="fetchTitle">
           获取标题
@@ -771,6 +842,12 @@ onMounted(async () => {
           <input v-model="form.star" type="checkbox" />
           星标
         </label>
+        <!-- 失效标注：手动覆盖自动校验，避免网络抖动误判网页失效 -->
+        <select v-if="form.id" v-model.number="form.invalidMode" class="select">
+          <option :value="0">有效性：自动检测</option>
+          <option :value="1">有效性：强制有效</option>
+          <option :value="2">有效性：强制失效</option>
+        </select>
       </div>
       <textarea v-model="form.note" class="textarea" placeholder="备注（可选）"></textarea>
       <div class="form-actions">
@@ -798,9 +875,13 @@ onMounted(async () => {
             <!-- 网页记录展示缓存的 favicon；文件记录按扩展名展示类型图标 -->
             <img v-if="r.type === 'url' && r.favicon" class="favicon" :src="r.favicon" alt="" />
             <span v-else-if="r.type === 'url'" class="favicon fallback">{{ (r.title || '?').charAt(0) }}</span>
-            <span v-else class="favicon fallback">{{ fileIcon(r.pathOrUrl) }}</span>
-            <span class="badge" :class="r.type">{{ r.type === 'url' ? '网页' : '文件' }}</span>
-            <span v-if="r.invalid" class="badge invalid">失效</span>
+            <span v-else class="favicon fallback">{{ fileIcon(r) }}</span>
+            <span class="badge" :class="r.type">
+              {{ r.type === 'url' ? '网页' : r.type === 'folder' ? '文件夹' : '文件' }}
+            </span>
+            <span v-if="r.invalid" class="badge invalid" :title="r.invalidMode === 2 ? '手动标注失效' : '自动校验失效'">
+              失效{{ r.invalidMode === 2 ? '（手动）' : '' }}
+            </span>
             <span class="title">{{ r.title }}</span>
             <span class="path">{{ r.pathOrUrl }}</span>
             <span v-if="r.openCount > 0" class="opened">
@@ -824,6 +905,13 @@ onMounted(async () => {
               <button class="btn small" @click="open(r)">打开</button>
               <button class="btn small" @click="openEdit(r)">
                 {{ r.invalid ? '重定位' : '编辑' }}
+              </button>
+              <!-- 手动标注：避免网络抖动导致网页被误判失效 -->
+              <button class="btn small" @click="toggleManualInvalid(r)">
+                {{ r.invalid ? '标为有效' : '标为失效' }}
+              </button>
+              <button v-if="r.invalidMode !== 0" class="btn small" @click="clearInvalidMode(r)">
+                恢复自动
               </button>
               <button class="btn small danger" @click="remove(r)">删除</button>
             </template>
@@ -858,15 +946,20 @@ onMounted(async () => {
 .filters {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
+  row-gap: 8px;
   margin: 14px 0;
 }
+/* 勾选项文字强制单行：宽度不足时整块换行，而不是把「回收站」挤成上下两行 */
 .trash-toggle,
 .star-toggle {
   display: flex;
   align-items: center;
   gap: 4px;
   font-size: 14px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .error {
   color: var(--danger);
@@ -1019,6 +1112,7 @@ onMounted(async () => {
 .item-actions {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .btn.starred {
   color: var(--star);

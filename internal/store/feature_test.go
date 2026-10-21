@@ -281,4 +281,106 @@ func TestNormalizeInput(t *testing.T) {
 	if f.PathOrURL != `C:\docs\a.md` {
 		t.Fatalf("文件路径应被 Clean: %q", f.PathOrURL)
 	}
+	// 文件夹类型：路径同样 Clean，类型可被列表过滤
+	d, err := s.CreateRecord(model.RecordInput{Type: "folder", PathOrURL: `C:\docs\sub\`, Title: "文件夹"})
+	if err != nil {
+		t.Fatalf("创建文件夹记录失败: %v", err)
+	}
+	if d.Type != model.TypeFolder {
+		t.Fatalf("类型应为 folder: %q", d.Type)
+	}
+	if d.PathOrURL != `C:\docs\sub` {
+		t.Fatalf("文件夹路径应被 Clean: %q", d.PathOrURL)
+	}
+	folders, _ := s.ListRecords(model.ListFilter{Type: string(model.TypeFolder)})
+	if len(folders) != 1 || folders[0].ID != d.ID {
+		t.Fatalf("按 folder 过滤失败: %+v", folders)
+	}
+}
+
+// TestInvalidModeOverride 覆盖手动失效标注：强制失效/有效、自动校验不覆盖、
+// 恢复自动后由校验结果接管。
+func TestInvalidModeOverride(t *testing.T) {
+	s := openTest(t)
+	rec, _ := s.CreateRecord(model.RecordInput{Type: "url", PathOrURL: "https://x.com", Title: "网页"})
+
+	// 强制失效
+	if err := s.SetRecordInvalidMode(rec.ID, model.InvalidModeInvalid); err != nil {
+		t.Fatalf("设置强制失效失败: %v", err)
+	}
+	got, _ := s.GetRecord(rec.ID)
+	if !got.Invalid || got.InvalidMode != model.InvalidModeInvalid {
+		t.Fatalf("强制失效未生效: invalid=%v mode=%d", got.Invalid, got.InvalidMode)
+	}
+	// 自动校验不得覆盖手动标注（静默跳过，不报错）
+	if err := s.SetRecordInvalid(rec.ID, false); err != nil {
+		t.Fatalf("手动标注后自动校验应静默跳过: %v", err)
+	}
+	if got, _ = s.GetRecord(rec.ID); !got.Invalid {
+		t.Fatal("自动校验覆盖了手动标注")
+	}
+
+	// 强制有效
+	if err := s.SetRecordInvalidMode(rec.ID, model.InvalidModeValid); err != nil {
+		t.Fatalf("设置强制有效失败: %v", err)
+	}
+	if got, _ = s.GetRecord(rec.ID); got.Invalid || got.InvalidMode != model.InvalidModeValid {
+		t.Fatalf("强制有效未生效: invalid=%v mode=%d", got.Invalid, got.InvalidMode)
+	}
+
+	// 恢复自动：模式清零，原子写入校验结果
+	if err := s.ResetInvalidAuto(rec.ID, true); err != nil {
+		t.Fatalf("恢复自动失败: %v", err)
+	}
+	if got, _ = s.GetRecord(rec.ID); !got.Invalid || got.InvalidMode != model.InvalidModeAuto {
+		t.Fatalf("恢复自动后状态异常: invalid=%v mode=%d", got.Invalid, got.InvalidMode)
+	}
+	if err := s.SetRecordInvalid(rec.ID, false); err != nil {
+		t.Fatalf("恢复自动后校验应可写入: %v", err)
+	}
+
+	// 非法模式
+	if err := s.SetRecordInvalidMode(rec.ID, 9); err == nil {
+		t.Fatal("非法模式应报错")
+	}
+	// 编辑记录时保留标注模式
+	if _, err := s.UpdateRecord(model.RecordInput{
+		ID: rec.ID, Type: "url", PathOrURL: "https://x.com", Title: "改名",
+		InvalidMode: model.InvalidModeValid,
+	}); err != nil {
+		t.Fatalf("更新失败: %v", err)
+	}
+	if got, _ = s.GetRecord(rec.ID); got.Invalid || got.InvalidMode != model.InvalidModeValid {
+		t.Fatalf("更新后标注模式异常: invalid=%v mode=%d", got.Invalid, got.InvalidMode)
+	}
+}
+
+// TestSettingsPersist 覆盖偏好设置持久化：跨 Store 重开仍能读回。
+func TestSettingsPersist(t *testing.T) {
+	dir := t.TempDir()
+	s, err := Open(dir)
+	if err != nil {
+		t.Fatalf("打开存储失败: %v", err)
+	}
+	// 不存在的键返回空串而非错误
+	if v, err := s.GetSetting("sortBy"); err != nil || v != "" {
+		t.Fatalf("缺失键应返回空串: %q, %v", v, err)
+	}
+	if err := s.SetSetting("sortBy", "opened_at"); err != nil {
+		t.Fatalf("写入设置失败: %v", err)
+	}
+	if err := s.SetSetting("sortBy", "created_at"); err != nil {
+		t.Fatalf("覆盖设置失败: %v", err)
+	}
+	s.Close()
+
+	// 重新打开数据库验证落盘
+	s2, err := Open(dir)
+	if err != nil {
+		t.Fatalf("重新打开失败: %v", err)
+	}
+	defer s2.Close()
+	if v, _ := s2.GetSetting("sortBy"); v != "created_at" {
+		t.Fatalf("设置未持久化: %q", v)
+	}
 }

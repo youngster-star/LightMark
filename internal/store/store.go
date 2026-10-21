@@ -44,7 +44,7 @@ func (s *Store) Close() error {
 }
 
 // currentVersion 当前数据库 schema 版本。
-const currentVersion = 2
+const currentVersion = 4
 
 // v1Statements 版本 1：初始建表与索引，均为幂等语句。
 var v1Statements = []string{
@@ -132,6 +132,23 @@ func (s *Store) applyMigration(version int) error {
 			}
 		}
 		return nil
+	case 3:
+		// v3：失效标注模式（0 自动 / 1 强制有效 / 2 强制失效）
+		for _, stmt := range v3Statements {
+			if _, err := s.db.Exec(stmt); err != nil &&
+				!strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("执行迁移语句失败: %w", err)
+			}
+		}
+		return nil
+	case 4:
+		// v4：应用偏好设置（排序方式等界面状态持久化）
+		for _, stmt := range v4Statements {
+			if _, err := s.db.Exec(stmt); err != nil {
+				return fmt.Errorf("执行迁移语句失败: %w", err)
+			}
+		}
+		return nil
 	}
 	return fmt.Errorf("未知迁移版本: %d", version)
 }
@@ -141,4 +158,17 @@ var v2Statements = []string{
 	`ALTER TABLE records ADD COLUMN favicon TEXT NOT NULL DEFAULT ''`,
 	`ALTER TABLE records ADD COLUMN opened_at INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE records ADD COLUMN open_count INTEGER NOT NULL DEFAULT 0`,
+}
+
+// v3Statements 版本 3：失效标注模式（手动覆盖自动校验结果）。
+var v3Statements = []string{
+	`ALTER TABLE records ADD COLUMN invalid_mode INTEGER NOT NULL DEFAULT 0`,
+}
+
+// v4Statements 版本 4：应用偏好设置表（界面选项持久化，避免依赖 WebView 存储）。
+var v4Statements = []string{
+	`CREATE TABLE IF NOT EXISTS app_settings (
+		key   TEXT PRIMARY KEY,
+		value TEXT NOT NULL
+	)`,
 }
